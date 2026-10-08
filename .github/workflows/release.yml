@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.4.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  linux-release:
+    name: Linux Release
+    uses: ./.github/workflows/linux.yml
+    with:
+      build_type: Release
+      server_only: OFF
+    secrets: inherit
+
+  macos-release:
+    name: macOS Release
+    uses: ./.github/workflows/apple.yml
+    with:
+      platform: MacOSX
+      arch: arm64
+    secrets:
+      MAC_DEVELOPER_ID_P12_FILE: ${{ secrets.MAC_DEVELOPER_ID_P12_FILE }}
+      MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
+      MAC_DEVELOPER_NAME: ${{ secrets.MAC_DEVELOPER_NAME }}
+      MAC_DEVELOPER_TEAM: ${{ secrets.MAC_DEVELOPER_TEAM }}
+      STK_NOTARIZATION_USERNAME: ${{ secrets.STK_NOTARIZATION_USERNAME }}
+      STK_NOTARIZATION_PASSWORD: ${{ secrets.STK_NOTARIZATION_PASSWORD }}
+
+  windows-release:
+    name: Windows Release
+    uses: ./.github/workflows/windows.yml
+    with:
+      arch: x86_64
+    secrets: inherit
+
+  switch-release:
+    name: Switch Release
+    uses: ./.github/workflows/switch.yml
+    secrets: inherit
+
+  android-release:
+    name: Android Release
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Build Android
+        run: |
+          echo "Android build not yet configured in CI"
+          exit 0
+
+  aggregate-release:
+    name: Aggregate Release
+    needs: [linux-release, macos-release, windows-release, switch-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+          pattern: SuperTuxKart-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          find release-artifacts -type f | sort
+
+      - name: Create unified release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+          name: "SuperTuxKart ${{ github.ref_name }}"
+          body: |
+            # SuperTuxKart ${{ github.ref_name }}
+            
+            ## Downloads
+            
+            ### Linux
+            - `SuperTuxKart-${{ github.ref_name }}-linux.tar.xz` (x86_64)
+            - `SuperTuxKart-${{ github.ref_name }}-linux-aarch64.tar.xz` (ARM64)
+            
+            ### macOS
+            - `SuperTuxKart-${{ github.ref_name }}-mac.zip` (Universal: Intel + Apple Silicon)
+            
+            ### Windows
+            - `SuperTuxKart-${{ github.ref_name }}-win.zip` (Portable)
+            - `SuperTuxKart-${{ github.ref_name }}-installer-x86_64.exe` (Installer)
+            - `SuperTuxKart-${{ github.ref_name }}-installer-i686.exe` (Installer 32-bit)
+            - `SuperTuxKart-${{ github.ref_name }}-installer-aarch64.exe` (Installer ARM64)
+            
+            ### Nintendo Switch
+            - `SuperTuxKart-${{ github.ref_name }}-switch.zip`
+            
+            ## Installation
+            Extract the archive for your platform and run the executable.
+            
+            ## Changelog
+            See [CHANGELOG.md](https://github.com/supertuxkart/stk-code/blob/master/CHANGELOG.md)
+          artifacts: "release-artifacts/*"
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') }}
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true

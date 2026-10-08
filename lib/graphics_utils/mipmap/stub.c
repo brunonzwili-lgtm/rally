@@ -1,0 +1,1 @@
+/* Stub file for Emscripten build - graphics_utils functions not needed for web */

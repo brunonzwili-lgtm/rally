@@ -1,0 +1,318 @@
+name: Web (WASM)
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - '*'
+  pull_request: {}
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        type: choice
+        options: [Release, Debug]
+        default: 'Release'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build Web (WASM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Checkout stk-assets
+        uses: actions/checkout@v6
+        with:
+          repository: supertuxkart/stk-assets
+          path: stk-assets
+          fetch-depth: 1
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 'latest'
+          actions-cache-folder: 'emsdk-cache'
+
+      - name: Configure CMake
+        run: |
+          cmake -B build_web \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/Toolchain-emscripten.cmake \
+            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} \
+            -DUSE_EMSCRIPTEN=ON \
+            -DSERVER_ONLY=OFF \
+            -DCHECK_ASSETS=OFF \
+            -DBUILD_RECORDER=OFF \
+            -DNO_SHADERC=ON \
+            -DUSE_WIIUSE=OFF \
+            -DUSE_GLES2=ON \
+            -G Ninja
+
+      - name: Build
+        run: |
+          cmake --build build_web --config ${{ github.event.inputs.build_type || 'Release' }} -- -j4
+
+      - name: List build outputs
+        run: |
+          ls -la build_web/web/
+          find build_web/web -type f -name "*.html" -o -name "*.js" -o -name "*.wasm" -o -name "*.data" | head -20
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: supertuxkart-web
+          path: build_web/web/
+          retention-days: 7
+
+  deploy-preview:
+    name: Deploy to GitHub Pages (Preview)
+    needs: build
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: supertuxkart-web
+          path: web-build
+
+      - name: Create index.html
+        run: |
+          cat > web-build/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>SuperTuxKart - Web Demo</title>
+              <style>
+                  * { margin: 0; padding: 0; box-sizing: border-box; }
+                  body { 
+                      background: #1a1a2e; 
+                      color: #eee; 
+                      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                      min-height: 100vh;
+                      display: flex;
+                      flex-direction: column;
+                      align-items: center;
+                  }
+                  header { 
+                      padding: 2rem; 
+                      text-align: center;
+                      background: linear-gradient(135deg, #16213e 0%, #0f0f23 100%);
+                      width: 100%;
+                      border-bottom: 1px solid #e94560;
+                  }
+                  h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #e94560; }
+                  .subtitle { color: #aaa; font-size: 1.1rem; }
+                  .game-container { 
+                      width: 100%;
+                      max-width: 1280px;
+                      padding: 2rem;
+                      display: flex;
+                      justify-content: center;
+                  }
+                  #gameCanvas { 
+                      width: 100%;
+                      max-width: 1280px;
+                      height: auto;
+                      border-radius: 8px;
+                      box-shadow: 0 0 40px rgba(233, 69, 96, 0.3);
+                      background: #000;
+                  }
+                  .loading { 
+                      display: flex;
+                      flex-direction: column;
+                      align-items: center;
+                      justify-content: center;
+                      min-height: 400px;
+                  }
+                  .spinner {
+                      width: 48px;
+                      height: 48px;
+                      border: 4px solid #333;
+                      border-top-color: #e94560;
+                      border-radius: 50%;
+                      animation: spin 1s linear infinite;
+                      margin-bottom: 1rem;
+                  }
+                  @keyframes spin { to { transform: rotate(360deg); } }
+                  .progress-bar {
+                      width: 300px;
+                      height: 8px;
+                      background: #333;
+                      border-radius: 4px;
+                      overflow: hidden;
+                  }
+                  .progress-fill {
+                      height: 100%;
+                      background: linear-gradient(90deg, #e94560, #ff6b8a);
+                      width: 0%;
+                      transition: width 0.3s;
+                  }
+                  .status { color: #888; font-size: 0.9rem; margin-top: 0.5rem; }
+                  footer {
+                      padding: 2rem;
+                      text-align: center;
+                      color: #666;
+                      font-size: 0.85rem;
+                  }
+                  .controls {
+                      display: flex;
+                      gap: 1rem;
+                      margin-top: 1rem;
+                      flex-wrap: wrap;
+                      justify-content: center;
+                  }
+                  .controls button {
+                      padding: 0.75rem 1.5rem;
+                      background: #e94560;
+                      border: none;
+                      border-radius: 4px;
+                      color: white;
+                      font-size: 1rem;
+                      cursor: pointer;
+                      transition: background 0.2s;
+                  }
+                  .controls button:hover { background: #ff6b8a; }
+                  .controls button:disabled { background: #555; cursor: not-allowed; }
+                  @media (max-width: 768px) {
+                      h1 { font-size: 1.8rem; }
+                      .game-container { padding: 1rem; }
+                  }
+              </style>
+          </head>
+          <body>
+              <header>
+                  <h1>SuperTuxKart</h1>
+                  <p class="subtitle">WebAssembly Build - Preview Release</p>
+              </header>
+              <div class="game-container">
+                  <div id="gameWrapper">
+                      <div class="loading" id="loadingScreen">
+                          <div class="spinner"></div>
+                          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+                          <div class="status" id="statusText">Initializing...</div>
+                      </div>
+                      <canvas id="gameCanvas" style="display:none;"></canvas>
+                  </div>
+              </div>
+              <div class="controls">
+                  <button id="fullscreenBtn" disabled>Fullscreen</button>
+                  <button id="pauseBtn" disabled>Pause</button>
+              </div>
+              <footer>
+                  <p>SuperTuxKart is free software under GPL v3. <a href="https://github.com/supertuxkart/stk-code" style="color:#e94560">Source Code</a></p>
+                  <p>Build: ${{ github.sha }} | ${{ github.run_number }}</p>
+              </footer>
+
+              <script>
+                  const loadingScreen = document.getElementById('loadingScreen');
+                  const gameCanvas = document.getElementById('gameCanvas');
+                  const progressFill = document.getElementById('progressFill');
+                  const statusText = document.getElementById('statusText');
+                  const fullscreenBtn = document.getElementById('fullscreenBtn');
+                  const pauseBtn = document.getElementById('pauseBtn');
+
+                  let Module = {
+                      canvas: gameCanvas,
+                      preRun: [],
+                      postRun: [],
+                      print: (text) => {
+                          console.log(text);
+                          if (text.includes('Loading') || text.includes('loading')) {
+                              statusText.textContent = text;
+                          }
+                      },
+                      printErr: (text) => console.error(text),
+                      setStatus: (text) => {
+                          statusText.textContent = text;
+                      },
+                      onRuntimeInitialized: () => {
+                          loadingScreen.style.display = 'none';
+                          gameCanvas.style.display = 'block';
+                          fullscreenBtn.disabled = false;
+                          pauseBtn.disabled = false;
+                      },
+                      onProgress: (progress) => {
+                          const percent = Math.round(progress * 100);
+                          progressFill.style.width = percent + '%';
+                          statusText.textContent = `Loading assets... ${percent}%`;
+                      },
+                      instantiateWasm: (imports, successCallback) => {
+                          return fetch('supertuxkart.wasm')
+                              .then(response => response.arrayBuffer())
+                              .then(bytes => WebAssembly.instantiate(bytes, imports))
+                              .then(result => {
+                                  successCallback(result.instance);
+                              });
+                      }
+                  };
+
+                  // Load the Emscripten-generated JS
+                  const script = document.createElement('script');
+                  script.src = 'supertuxkart.js';
+                  script.onload = () => {
+                      statusText.textContent = 'Engine loaded, initializing...';
+                  };
+                  script.onerror = () => {
+                      statusText.textContent = 'Failed to load game. Check console for errors.';
+                      statusText.style.color = '#e94560';
+                  };
+                  document.head.appendChild(script);
+
+                  // Fullscreen handler
+                  fullscreenBtn.addEventListener('click', () => {
+                      if (gameCanvas.requestFullscreen) {
+                          gameCanvas.requestFullscreen();
+                      }
+                  });
+
+                  // Pause handler
+                  let isPaused = false;
+                  pauseBtn.addEventListener('click', () => {
+                      isPaused = !isPaused;
+                      pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
+                      if (Module.pauseMainLoop) {
+                          if (isPaused) Module.pauseMainLoop();
+                          else Module.resumeMainLoop();
+                      }
+                  });
+              </script>
+          </body>
+          </html>
+          EOF
+
+      - name: Copy assets to web-build
+        run: |
+          # Copy stk-assets data files if they exist
+          if [ -d "stk-assets" ]; then
+            mkdir -p web-build/data
+            cp -r stk-assets/* web-build/data/ 2>/dev/null || true
+          fi
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web-build
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

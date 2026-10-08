@@ -1,0 +1,128 @@
+name: Nightly Builds
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force create release even if no changes'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  check-changes:
+    name: Check for Changes
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+      commit_sha: ${{ steps.check.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          LAST_NIGHTLY=$(git log --grep="nightly" --oneline -1 --format="%H" 2>/dev/null || echo "")
+          if [ -z "$LAST_NIGHTLY" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          else
+            CHANGES=$(git log --oneline $LAST_NIGHTLY..HEAD --pretty=format: | wc -l)
+            if [ "$CHANGES" -gt 0 ] || [ "${{ github.event.inputs.force_release }}" = "true" ]; then
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+            fi
+            echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+  linux-build:
+    name: Linux Build
+    needs: check-changes
+    if: needs.check-changes.outputs.has_changes == 'true'
+    uses: ./.github/workflows/linux.yml
+    with:
+      build_type: Release
+      server_only: OFF
+    secrets: inherit
+
+  macos-build:
+    name: macOS Build
+    needs: check-changes
+    if: needs.check-changes.outputs.has_changes == 'true'
+    uses: ./.github/workflows/apple.yml
+    with:
+      platform: MacOSX
+      arch: arm64
+    secrets: inherit
+
+  windows-build:
+    name: Windows Build
+    needs: check-changes
+    if: needs.check-changes.outputs.has_changes == 'true'
+    uses: ./.github/workflows/windows.yml
+    with:
+      arch: x86_64
+    secrets: inherit
+
+  switch-build:
+    name: Switch Build
+    needs: check-changes
+    if: needs.check-changes.outputs.has_changes == 'true'
+    uses: ./.github/workflows/switch.yml
+    secrets: inherit
+
+  create-nightly-release:
+    name: Create Nightly Release
+    needs: [check-changes, linux-build, macos-build, windows-build, switch-build]
+    if: needs.check-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: SuperTuxKart-*
+          merge-multiple: true
+
+      - name: Create nightly tag
+        id: tag
+        run: |
+          TAG="nightly-$(date +%Y%m%d)-${{ needs.check-changes.outputs.commit_sha::7 }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          git tag -f "$TAG"
+          git push -f origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.tag.outputs.tag }}
+          name: "Nightly Build ${{ steps.tag.outputs.tag }}"
+          body: |
+            Automated nightly build from commit ${{ needs.check-changes.outputs.commit_sha }}
+            
+            **Platforms:**
+            - Linux (x86_64, ARM64)
+            - macOS (Universal: x86_64 + ARM64)
+            - Windows (x86_64, ARM64, i686)
+            - Nintendo Switch
+            
+            **Installation:**
+            Download the appropriate archive for your platform and extract.
+          artifacts: "artifacts/*"
+          prerelease: true
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+
+      - name: Commit nightly marker
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "nightly: ${{ steps.tag.outputs.tag }}"
+          git push origin HEAD:master
