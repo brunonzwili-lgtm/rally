@@ -36,7 +36,9 @@ if(USE_EMSCRIPTEN)
     set(USE_MOJOAL ON)
     set(HAVE_OPUS OFF)
     set(BC7_ISPC OFF)
-    set(USE_IPV6 OFF)
+    # The bundled ENet is always IPv6-capable (ENetIP is a struct), so the
+    # ENABLE_IPV6 code paths are the correct ones to compile.
+    set(USE_IPV6 ON)
     set(USE_ASAN OFF)
     set(USE_TSAN OFF)
     set(USE_USAN OFF)
@@ -51,12 +53,11 @@ if(USE_EMSCRIPTEN)
     # on demand and resolves its headers while compiling. Third-party static
     # libs are not in $EMSCRIPTEN_ROOT/system, only in the port cache.
     set(STK_WEB_PORTS -sUSE_SDL=2 -sUSE_LIBPNG=1 -sUSE_LIBJPEG=1 -sUSE_ZLIB=1
-                       -sUSE_FREETYPE=1 -sUSE_HARFBUZZ=1)
+                       -sUSE_FREETYPE=1)
     add_compile_options(${STK_WEB_PORTS})
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexceptions>)
 
     add_link_options(
-        -sUSE_OPENGL=1
         -sGL_ENABLE_GET_PROC_ADDRESS=1
         -sFULL_ES3=1
         -sMIN_WEBGL_VERSION=2
@@ -556,8 +557,20 @@ if (NOT SERVER_ONLY)
     SET(SHEENBIDI_LIBRARY sheenbidi)
 
     if(USE_EMSCRIPTEN OR "${CMAKE_SYSTEM_NAME}" STREQUAL "Emscripten")
-        # Already set via ports above
-        message(STATUS "Using Emscripten ports for Freetype and Harfbuzz")
+        # Freetype comes from the -sUSE_FREETYPE port. HarfBuzz cannot: the
+        # Emscripten port is 3.2.0 and STK needs >= 4.0, so web/build_harfbuzz.sh
+        # compiles a newer HarfBuzz for wasm and we pick it up here.
+        message(STATUS "Web build: Freetype from Emscripten port")
+        file(GLOB STK_WEB_HARFBUZZ_LIB "${PROJECT_SOURCE_DIR}/web/third_party/harfbuzz-*/libharfbuzz_web.a")
+        if(NOT STK_WEB_HARFBUZZ_LIB)
+            message(FATAL_ERROR "HarfBuzz for the web build is missing.\n"
+                "Run: source <emsdk>/emsdk_env.sh && ./web/build_harfbuzz.sh")
+        endif()
+        list(GET STK_WEB_HARFBUZZ_LIB 0 HARFBUZZ_LIBRARY)
+        file(GLOB STK_WEB_HARFBUZZ_DIR "${PROJECT_SOURCE_DIR}/web/third_party/harfbuzz-*/src")
+        list(GET STK_WEB_HARFBUZZ_DIR 0 HARFBUZZ_INCLUDEDIR)
+        message(STATUS "Web build: HarfBuzz ${HARFBUZZ_LIBRARY}")
+        include_directories(${HARFBUZZ_INCLUDEDIR})
     else()
         # Freetype
         find_package(Freetype)
@@ -636,6 +649,20 @@ endif()
 
 # Provides list of source and header files (STK_SOURCES and STK_HEADERS)
 include(sources.cmake)
+
+if(USE_EMSCRIPTEN OR "${CMAKE_SYSTEM_NAME}" STREQUAL "Emscripten")
+    # Emscripten ships no mbedTLS/OpenSSL port, so the real crypto backends
+    # cannot be compiled. Swap in the no-op web backend (online multiplayer is
+    # unavailable; offline play is unaffected).
+    list(FILTER STK_SOURCES EXCLUDE REGEX "src/network/crypto_(mbedtls|openssl)\\.cpp$")
+    list(APPEND STK_SOURCES src/network/crypto_web.cpp)
+    add_definitions(-DSTK_WEB_CRYPTO)
+
+    # Same story for libcurl: no Emscripten port, so swap in a backend that
+    # reports every request as failed and keeps the game playable offline.
+    list(FILTER STK_SOURCES EXCLUDE REGEX "src/online/http_request_curl\\.cpp$")
+    list(APPEND STK_SOURCES src/online/http_request_web.cpp)
+endif()
 
 if (USE_APPLE_NETWORK_LIBRARIES)
     add_definitions(-DAPPLE_NETWORK_LIBRARIES)
@@ -912,12 +939,14 @@ if(NOT SERVER_ONLY)
     endif()
 
     if(USE_EMSCRIPTEN OR "${CMAKE_SYSTEM_NAME}" STREQUAL "Emscripten")
-        # Emscripten ports are linked via -sUSE_* flags in CMAKE_EXE_LINKER_FLAGS
+        # Emscripten ports are linked via -sUSE_* compile flags; HarfBuzz is a
+        # locally compiled static library (see web/build_harfbuzz.sh).
         target_link_libraries(supertuxkart
             ${SQUISH_LIBRARY}
             ${SHEENBIDI_LIBRARY}
             graphics_utils
             graphics_engine
+            ${HARFBUZZ_LIBRARY}
             tinygettext)
     else()
         target_link_libraries(supertuxkart

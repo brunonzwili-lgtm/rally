@@ -21,6 +21,10 @@
 
 #ifdef APPLE_NETWORK_LIBRARIES
 #include "network/crypto_cryptokit.hpp"
+#elif defined(STK_WEB_CRYPTO)
+// WebAssembly build: no mbedTLS/OpenSSL port is available, so use the no-op
+// backend that keeps offline play working and refuses encrypted connections.
+#include "network/crypto_web.hpp"
 #elif defined(ENABLE_CRYPTO_OPENSSL)
 #include "network/crypto_openssl.hpp"
 #else
